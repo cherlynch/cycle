@@ -18,26 +18,28 @@ public class Cycle {
 		this.matrix = new Depends().getMatrix(inputDir);
 		this.dependencyPairs = matrix.getDependencyPairs();
 	}
-	public ArrayList<Dependency> getCycle() {
-		CycleGraph graph = new CycleGraph(matrix.getNodes().size());
+	public Collection<Dependency> getCycle() {
+		Graph graph = new Graph(matrix.getNodes().size());
 		for(DependencyPair pair:dependencyPairs) {
 			graph.addEdge(pair.getFrom(), pair.getTo());
 		}
 		graph.printSCCs();
 		ArrayList<ArrayList<Integer>> ansList = graph.getList();
-		ArrayList<Dependency> cycleDep = new ArrayList<Dependency>();
+		Collection<Dependency> cycleDep = new HashSet<Dependency>();
+		int count =  0;
 		for(ArrayList<Integer> ans:ansList) {
 			if(ans.size()==2) {
 				System.out.println(ans.get(0)+" "+ans.get(1));
 				DependencyPair depA = findPairById(ans.get(0),ans.get(1)); 
 				DependencyPair depB = findPairById(ans.get(1),ans.get(0)); 
 				if(depA!=null&&depB!=null) {
-					String classA = matrix.getNodeName(depA.getFrom());//.replaceAll("\\\\","/");//.replaceAll(inputDir, "");
-					String classB = matrix.getNodeName(depB.getFrom());//.replaceAll("\\\\","/");//.replaceAll(inputDir, "");
+					String classA = matrix.getNodeName(depA.getFrom());
+					String classB = matrix.getNodeName(depB.getFrom());
 					DependencyDetail[] detail = new  DependencyDetail[2];
-					detail[0] = new DependencyDetail("AtoB",classA,depA.getDependencies());
-					detail[1] = new DependencyDetail("BtoA",classB,depB.getDependencies());
-					Dependency dependency = new Dependency(detail);
+					detail[0] = new DependencyDetail(count,"AtoB",classA,depA.getDependencies());
+					detail[1] = new DependencyDetail(count,"BtoA",classB,depB.getDependencies());
+					Dependency dependency = new Dependency(count,detail);
+					count++;
 					cycleDep.add(dependency);
 				}
 				
@@ -55,8 +57,8 @@ public class Cycle {
 		}
 		return null;
 	}
-	public Collection<String> getImplementsRelation(String interfaceName) {
-		Collection<String> froms = new HashSet<String>();
+	public HashSet<String> getImplementsRelation(String interfaceName) {
+		HashSet<String> froms = new HashSet<String>();
 		for(DependencyPair pair:dependencyPairs) {
 //			System.out.println(pair.getFrom()+" "+pair.getTo()+" "+pair.getFromName()+" "+pair.getToName());
 			for(DependencyValue value:pair.getDependencies()) {
@@ -70,9 +72,20 @@ public class Cycle {
 		return froms;
 	}
 	
+	public HashSet<String> getCallers(String str){
+		HashSet<String> callers = new HashSet<String>();
+		for(DependencyPair pair:dependencyPairs) {
+			for(DependencyValue value:pair.getDependencies()) {
+				if(value.getType().equals("Call")&&value.getDetailTo().equals(str)) {
+					callers.add(value.getDetailFrom());
+				}
+			}
+		}
+		return callers;
+	}
 	public static void main(String[] args) {
 		Cycle relation = new Cycle("D:/JHotDraw");
-		ArrayList<Dependency> res = relation.getCycle();
+		Collection<Dependency> res = relation.getCycle();
 		for(Dependency detail:res) {
 			System.out.println(detail.getDetail()[0].getName()+" "+detail.getDetail()[1].getName());
 			for(DependencyValue val:detail.getDetail()[0].getValues()) {

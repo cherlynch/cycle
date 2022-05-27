@@ -1,13 +1,13 @@
 package cn.njust.cy.actions;
 
-import java.io.File;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.text.MessageFormat;
+import java.util.*;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
+import org.eclipse.core.runtime.CoreException;
+import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.jdt.core.*;
 import org.eclipse.jdt.core.dom.*;
 import org.eclipse.jdt.core.dom.rewrite.ASTRewrite;
@@ -15,63 +15,63 @@ import org.eclipse.jdt.core.dom.rewrite.ListRewrite;
 import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jface.text.BadLocationException;
 import org.eclipse.jface.text.Document;
+import org.eclipse.ltk.core.refactoring.*;
 import org.eclipse.text.edits.MalformedTreeException;
 import org.eclipse.text.edits.TextEdit;
 import org.eclipse.ui.PartInitException;
 
 import cn.njust.cy.entity.DependencyDetail;
 import depends.matrix.core.DependencyValue;
-import depends.util.FileTraversal;
-import depends.util.FileUtil;
 
-public class AbstractRefactoring {
+public class InversionRefactoring extends Refactoring{
 	private IFile fileA;
 	private IFile fileB;
 	private String newFileName;
-	private DependencyDetail details;
-	private IJavaProject project;
 	
-	public AbstractRefactoring(IFile fileA,IFile fileB,String newFileName,DependencyDetail details,IJavaProject project) {
+	private DependencyDetail details;
+	private Collection<String> changesFile;
+	private HashSet<IJavaElement> javaElementsToOpenInEditor;
+
+	public InversionRefactoring(IFile fileA,IFile fileB,String newFileName,DependencyDetail details,Collection<String> changesFile) {
 		this.fileA = fileA;
 		this.fileB = fileB;
-		this.newFileName = newFileName;
+		this.newFileName = "Abstract" + fileA.getName().replace(".java","");//设置新文件的默认名
 		this.details = details;
-		this.project = project;
-		createNewInterface();
-		modifySourceClassA();
-		modifySourceClassB();	
+		this.changesFile = changesFile;
+		this.javaElementsToOpenInEditor = new HashSet<IJavaElement>();
 	}
 	
-	public MethodDeclaration findMethodByName(MethodDeclaration[] methodDecls,String methodName) {
-//	public Set<MethodDeclaration> findMethodByName(MethodDeclaration[] methodDecls,String methodName) {
-		Set <MethodDeclaration> candidateMethodDecls = new HashSet<MethodDeclaration>();
-		for(MethodDeclaration methodDecl:methodDecls) {
-			if(methodDecl.getName().toString().equals(methodName)) {
-				candidateMethodDecls.add(methodDecl);
-				return methodDecl;
-			}
-		}
-//		return candidateMethodDecls;
-		return null;
+	public void applyRefactoring() { 
+		createNewFile(); //1.创建abstractA
+		modifySourceClassA();//2.修改class A
+		modifySourceClassB();//3.修改class B
+		modifyChanges();//4.如果重构后影响其他文件，进行修改
 	}
 	
-	public void createNewInterface() {//根据classA创建新的interface
-		IFolder sourceFolder = (IFolder) fileA.getParent();
-		IPackageFragment sourcePackage = (IPackageFragment)JavaCore.create(sourceFolder);
+
+	public IPackageFragment getPackage(IFile file) { //得到当前文件所在的package
+		IFolder folder = (IFolder) file.getParent();
+		IPackageFragment mypackage = (IPackageFragment)JavaCore.create(folder);
+		return mypackage;
+	}
+	
+	public CompilationUnit getCompilationUnit(IFile file) {  //得到当前文件的CompilationUnit
+		ICompilationUnit IUnit = (ICompilationUnit)JavaCore.create(file);
+		CompilationUnit unit = parse(IUnit);
+		return unit;
+	}
+	
+	public void createNewFile() {//根据classA创建其抽象
+		//获取源文件（fileA）的各种信息
+		IPackageFragment sourcePackage = getPackage(fileA);
 		ICompilationUnit sourceIUnit = (ICompilationUnit)JavaCore.create(fileA);
 		CompilationUnit sourceUnit = parse(sourceIUnit);	
-		TypeDeclaration typeDecl = (TypeDeclaration) sourceUnit.types().get(0);
-		MethodDeclaration[] methodDecls = typeDecl.getMethods();
-		System.out.println(methodDecls[0]);System.out.println(methodDecls.length);
+		TypeDeclaration sourceTypeDecl = (TypeDeclaration) sourceUnit.types().get(0);
+		MethodDeclaration[] sourceMethodDecls = sourceTypeDecl.getMethods();
 		try {
-			for(IJavaElement unit:sourcePackage.getChildren()) {
-				if(unit.getElementName().equals(newFileName)) {
-					newFileName = newFileName + "Copy"; //如果已经存在，则重新命名
-				}
-			}
+			//创建新的文件
 			ICompilationUnit extractIUnit = sourcePackage.createCompilationUnit(newFileName+".java","",false, null);
-			
-			//设置package 
+			//设置其package 
 			if(sourceUnit.getPackage() != null) {
 				extractIUnit.createPackageDeclaration(sourceUnit.getPackage().getName().toString(), null);
 			}
@@ -79,42 +79,78 @@ public class AbstractRefactoring {
 			String typeStr = "public abstract class " + newFileName + " {"+ "\n" + "}";
 			
 			Set<String> requiredImportClass = new HashSet<String>(); //需要import的class
-			if(typeDecl.getSuperclassType()!=null) {
-				Type superClass = typeDecl.getSuperclassType();
+			
+			if(sourceTypeDecl.getSuperclassType()!=null) { //如果原来的类继承于别的类，让这个类继承
+				Type superClass = sourceTypeDecl.getSuperclassType();
 				typeStr = "public abstract class " + newFileName +" extends " + superClass + "{"+ "\n" + "}";
-				requiredImportClass.add(superClass.resolveBinding().getPackage().getName()+"."+superClass);
+				if(!superClass.resolveBinding().getPackage().toString().equals(sourcePackage.toString())) { //如果不是来自一个package，还需要import
+					requiredImportClass.add(superClass.resolveBinding().getPackage().getName()+"."+superClass);
+				}
 			}
 			extractIUnit.createType(typeStr,null,true, null);
 			IType type = extractIUnit.getType(newFileName);
 			
 			//创建 abstract method  不是所有的method都提取，只提取需要调用的
-			String qualifiedNameA = typeDecl.resolveBinding().getQualifiedName();
+			String qualifiedNameA = sourceTypeDecl.resolveBinding().getQualifiedName();
 			Set<MethodDeclaration> methodDeclsRequiredAbstract = new HashSet<MethodDeclaration>(); //需要用到的method
 			for(DependencyValue value:details.getValues()) {
 				if(value.getType().equals("Call")) {
 					if(!value.getDetailTo().equals(qualifiedNameA)) {
 						String methodName = value.getDetailTo().replaceAll(qualifiedNameA+".","");
-						MethodDeclaration methodDecl = findMethodByName(methodDecls,methodName);
-						methodDeclsRequiredAbstract.add(methodDecl);
+						System.out.println("methodName  "+methodName);
+						MethodDeclaration methodDecl = findMethodByName(sourceMethodDecls,methodName);
+						if(methodDecl!=null) methodDeclsRequiredAbstract.add(methodDecl);
 					}
 				}
 			}
-			
 			for(MethodDeclaration methodDecl:methodDeclsRequiredAbstract) {
 				String myMethod = "";
 				List<Modifier> modifiers = methodDecl.modifiers();
-				String parameterList = "";
+				String parameterStr = "";
 				if(methodDecl.parameters()!=null) {
-					List<SingleVariableDeclaration> sourceMethodParameters = methodDecl.parameters();
-					for(SingleVariableDeclaration parameter : sourceMethodParameters) {
-						if(parameter.getType().toString().equals("")) {
-							//如果参数类型为本身，则要将参数也换成abstract
+					List<SingleVariableDeclaration> sourceMethodParameterList = methodDecl.parameters();
+					for(SingleVariableDeclaration parameter : sourceMethodParameterList) {
+						String fileAName = fileA.getName().replace(".java", "");
+						SingleVariableDeclaration lastParameter = sourceMethodParameterList.get(sourceMethodParameterList.size()-1);
+						if(parameter.getType().toString().equals(fileAName)) {//如果参数类型为本身，则要将参数也换成abstract
+							if(parameter.equals(lastParameter)) {//如果为最后一个
+								parameterStr = parameterStr + newFileName +" "+ parameter.getName();
+							}else {
+								parameterStr = parameterStr + newFileName +" "+ parameter.getName() + ", ";
+							}//同时也要修改A中该方法的parameter
+							AST ast = sourceUnit.getAST();
+							ASTRewrite sourceRewriter = ASTRewrite.create(ast);		
+							MethodDeclaration sourceMethodDecl = findMethodByName(sourceMethodDecls,methodDecl.getName().toString());
+							sourceMethodDecl.accept(new ASTVisitor() {
+								public boolean visit(SimpleType node) {
+									sourceRewriter.set(node,SimpleType.NAME_PROPERTY, ast.newName(newFileName), null);
+									return true;
+								}
+							});
+							try {
+								Document document = new Document(sourceIUnit.getSource());
+								TextEdit edits = sourceRewriter.rewriteAST();
+								edits.apply(document);
+								sourceIUnit.getBuffer().setContents(document.get());
+							} catch (JavaModelException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (MalformedTreeException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							} catch (BadLocationException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							}
 						}
-						if(sourceMethodParameters.get(sourceMethodParameters.size()-1).equals(parameter)) {
-							parameterList = parameterList + parameter.getType() +" "+ parameter.getName();
-						}else {
-							parameterList = parameterList + parameter.getType() +" "+ parameter.getName() + ", ";
+						else {
+							if(parameter.equals(lastParameter)) {
+								parameterStr = parameterStr + parameter.getType() +" "+ parameter.getName();
+							}else {
+								parameterStr = parameterStr + parameter.getType() +" "+ parameter.getName() + ", ";
+							}
 						}
+						
 					}
 				}
 				boolean isPrivate = false;
@@ -135,11 +171,11 @@ public class AbstractRefactoring {
 						}
 					}
 				}
-				// 设置为abstract 或 interface
+				// 设置为abstract method
 //				myMethod = myMethod + " " + methodDecl.getReturnType2()+ " " +methodDecl.getName()
 //				+"("+parameterList+")" + throwns + ";";
 				myMethod = myMethod +" abstract"+ " " + methodDecl.getReturnType2()+ " " +methodDecl.getName()
-								+"("+parameterList+")" + throwns + ";";
+								+"("+parameterStr+")" + throwns + ";";
 				if(methodDecl.getReturnType2()!=null&&!isPrivate) {//不是构造函数；不是私有函数
 					type.createMethod(myMethod, null, true, null);
 					System.out.println(myMethod);
@@ -171,15 +207,13 @@ public class AbstractRefactoring {
 //					requiredImportClass.remove(str);
 					extractIUnit.createImport(importStr,null, null);
 			}
+			
 			IJavaElement javaElement = extractIUnit;
-			JavaUI.openInEditor(javaElement);
+			javaElementsToOpenInEditor.add(javaElement);
 		} catch (JavaModelException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		} catch (MalformedTreeException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		} catch (PartInitException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
@@ -211,7 +245,8 @@ public class AbstractRefactoring {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-		
+		IJavaElement javaElement = sourceIUnit;
+		javaElementsToOpenInEditor.add(javaElement);
 	}
 	// 对 classB 重命名
 	public void modifySourceClassB() {
@@ -260,7 +295,27 @@ public class AbstractRefactoring {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-
+		IJavaElement javaElement = sourceIUnit;
+		javaElementsToOpenInEditor.add(javaElement);
+	}
+	
+	public void modifyChanges() {
+		if(changesFile!=null) { //不为空，需要修改
+			IJavaProject myProject = ((ICompilationUnit)JavaCore.create(fileA)).getJavaProject();//获取当前项目
+			for(String str:changesFile) {
+				try {
+					IType type = myProject.findType(str);
+					ICompilationUnit IUnit = type.getCompilationUnit();
+					System.out.println("unit: "+IUnit.getElementName());
+					IJavaElement javaElement = IUnit;
+					javaElementsToOpenInEditor.add(javaElement);
+					modifyImplementsChange(IUnit);
+				} catch (JavaModelException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}
 	}
 	
 	public void modifyImplementsChange(ICompilationUnit IUnit) {
@@ -294,12 +349,6 @@ public class AbstractRefactoring {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-//		Collection<DependencyValue> values = details.getValues();
-//		for(DependencyValue value:values) {
-//			if(value.getType().equals("Call")||value.getType().equals("Parameter")) {
-//				String method = 
-//			}
-//		}
 	}
 	
 	private static CompilationUnit parse(ICompilationUnit unit) {
@@ -308,5 +357,90 @@ public class AbstractRefactoring {
 		parser.setSource(unit);
 		parser.setResolveBindings(true);
 		return (CompilationUnit) parser.createAST(null); // parse
+	}
+
+	public String getNewFileName() {
+		return newFileName;
+	}
+	
+	public void setNewFileName(String newFileName) {
+		this.newFileName = newFileName;
+	}
+	
+	public HashSet<IJavaElement> getJavaElementsToOpenInEditor() {
+		return javaElementsToOpenInEditor;
+	}
+	
+	public MethodDeclaration findMethodByName(MethodDeclaration[] methodDecls,String methodName) {
+//		public Set<MethodDeclaration> findMethodByName(MethodDeclaration[] methodDecls,String methodName) {
+			Set <MethodDeclaration> candidateMethodDecls = new HashSet<MethodDeclaration>();
+			for(MethodDeclaration methodDecl:methodDecls) {
+				if(methodDecl.getName().toString().equals(methodName)) {
+					candidateMethodDecls.add(methodDecl);
+					return methodDecl;
+				}
+			}
+//			return candidateMethodDecls;
+			return null;
+		}
+		
+	@Override
+	public RefactoringStatus checkFinalConditions(IProgressMonitor pm)
+			throws CoreException, OperationCanceledException {
+		// TODO Auto-generated method stub
+		final RefactoringStatus status= new RefactoringStatus();
+		try {
+			pm.beginTask("Checking preconditions...", 2);
+			applyRefactoring();
+		} finally {
+			pm.done();
+		}
+		return status;
+	}
+
+	@Override
+	public RefactoringStatus checkInitialConditions(IProgressMonitor pm)
+			throws CoreException, OperationCanceledException {
+		// TODO Auto-generated method stub
+		RefactoringStatus status= new RefactoringStatus();
+		try {
+			pm.beginTask("Checking preconditions...", 1);
+		} finally {
+			pm.done();
+		}
+		return status;
+	}
+
+	@Override
+	public Change createChange(IProgressMonitor pm) throws CoreException, OperationCanceledException {
+		// TODO Auto-generated method stub
+		try {
+			pm.beginTask("Creating change...", 1);
+			final Collection<Change> changes = new ArrayList<Change>();
+//			changes.addAll(compilationUnitChanges.values());
+//			changes.addAll(createCompilationUnitChanges.values());
+			CompositeChange change = new CompositeChange(getName(), changes.toArray(new Change[changes.size()])) {
+				@Override
+				public ChangeDescriptor getDescriptor() {
+					CompilationUnit sourceCompilationUnit = getCompilationUnit(fileA);
+					ICompilationUnit sourceICompilationUnit = (ICompilationUnit)sourceCompilationUnit.getJavaElement();
+					TypeDeclaration sourceTypeDecl = (TypeDeclaration) sourceCompilationUnit.types().get(0);
+					String projectName = sourceICompilationUnit.getJavaProject().getElementName();
+					String description = MessageFormat.format("Refactor from ''{0}''", new Object[] { sourceTypeDecl.getName().getIdentifier()});
+					String comment = null;
+					return new RefactoringChangeDescriptor(new InversionRefactoringDescriptor(projectName,description,
+							comment,fileA,fileB,newFileName,details,changesFile));
+				}
+			};
+			return change;
+		} finally {
+			pm.done();
+		}
+	}
+
+	@Override
+	public String getName() {
+		// TODO Auto-generated method stub
+		return "Inversion Refactoring";
 	}
 }

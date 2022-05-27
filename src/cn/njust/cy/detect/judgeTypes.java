@@ -13,23 +13,26 @@ public class judgeTypes {
 	public int getTypes() {
 		Collection<DependencyValue> valueList1 = dependency.getDetail()[0].getValues();
 		Collection<DependencyValue> valueList2 = dependency.getDetail()[1].getValues();
-		for(DependencyValue value:valueList1) {
+		int state = -1;
+		for(DependencyValue value:valueList1) {			
 			if(value.getType().equals("Create")) {//提取A
-				return 1;
+				state = 1;
 			}
 			if(value.getType().equals("Implements")||value.getType().equals("Extend")) {
 				return 3;
 			}
+			if(valueList1.size()==1&&value.getType().equals("Import")) return 5;
 		}
 		for(DependencyValue value:valueList2) {
 			if(value.getType().equals("Create")) {//提取B
-				return 2;
+				state = 2;
 			}
 			if(value.getType().equals("Implements")||value.getType().equals("Extend")) {
 				return 4;
 			}
-			
+			if(valueList1.size()==1&&value.getType().equals("Import")) return 5;
 		}
-		return -1;
+		
+		return state;
 	}
 }

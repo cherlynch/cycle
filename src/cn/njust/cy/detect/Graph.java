@@ -6,13 +6,13 @@ import java.util.LinkedList;
   
 // This class represents a directed graph using adjacency list
 // representation
-public class CycleGraph{
+public class Graph{
     private int V;   // No. of vertices
     private LinkedList<Integer> adj[]; //Adjacency List
     private static ArrayList<Integer> ans = new ArrayList<Integer>();
 	private static ArrayList<ArrayList<Integer>> ansList = new ArrayList<ArrayList<Integer>>();
 
-    public CycleGraph(int v){
+    public Graph(int v){
         V = v;
         adj = new LinkedList[v];
         for (int i=0; i<v; ++i)
@@ -36,9 +36,9 @@ public class CycleGraph{
         }
     }
 
-    CycleGraph getTranspose()
+    Graph getTranspose()
     {
-        CycleGraph g = new CycleGraph(V);
+        Graph g = new Graph(V);
         for (int v = 0; v < V; v++)
         {
             // Recur for all the vertices adjacent to this vertex
@@ -86,7 +86,7 @@ public class CycleGraph{
                 fillOrder(i, visited, stack);
   
         // Create a reversed graph
-        CycleGraph gr = getTranspose();
+        Graph gr = getTranspose();
   
         // Mark all the vertices as not visited (For second DFS)
         for (int i = 0; i < V; i++)
@@ -117,7 +117,7 @@ public class CycleGraph{
     public static void main(String args[])
     {
         // Create a graph given in the above diagram
-        CycleGraph g = new CycleGraph(5);
+        Graph g = new Graph(5);
         g.addEdge(1, 0);
         g.addEdge(0, 2);
         g.addEdge(2, 1);

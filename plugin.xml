@@ -35,7 +35,6 @@
       <view
             category="cn.njust.cycle"
             class="cn.njust.cy.views.cycleView"
-            icon="icons/repair.png"
             id="cn.njust.cy.views.cycleView"
             name="Circular Dependency">
       </view>   

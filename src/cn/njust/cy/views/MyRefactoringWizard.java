@@ -1,5 +1,61 @@
 package cn.njust.cy.views;
 
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Set;
+
+import org.eclipse.jdt.core.IJavaElement;
+import org.eclipse.jdt.core.JavaModelException;
+import org.eclipse.jdt.ui.JavaUI;
+import org.eclipse.jface.action.Action;
+import org.eclipse.ltk.core.refactoring.Refactoring;
+import org.eclipse.ltk.ui.refactoring.RefactoringWizard;
+import org.eclipse.ui.PartInitException;
+
+import cn.njust.cy.actions.InversionRefactoring;
+import cn.njust.cy.actions.MoveRefactoring;
+
+public class MyRefactoringWizard extends RefactoringWizard {
+	private Refactoring refactoring;
+	private Action action;
+	public MyRefactoringWizard(Refactoring refactoring, Action action) {
+		super(refactoring, DIALOG_BASED_USER_INTERFACE | PREVIEW_EXPAND_FIRST_NODE | NO_BACK_BUTTON_ON_STATUS_DIALOG);
+		setDefaultPageTitle(refactoring.getName());
+		this.refactoring = refactoring;
+		this.action = action;
+	}
+
+	@Override
+	protected void addUserInputPages() {
+		// TODO Auto-generated method stub
+		if(refactoring instanceof InversionRefactoring) {
+			addPage(new InputPage((InversionRefactoring)refactoring));
+		}
+		if(refactoring instanceof MoveRefactoring) {
+			addPage(new InputPage((MoveRefactoring)refactoring));
+		}
+	}
+
+	@Override
+	public boolean performFinish() {
+		boolean finish = super.performFinish();
+		HashSet<IJavaElement> javaElementsToOpenInEditor = new LinkedHashSet<IJavaElement>();
+		if(refactoring instanceof InversionRefactoring) {
+			javaElementsToOpenInEditor.addAll(((InversionRefactoring)refactoring).getJavaElementsToOpenInEditor());
+			
+		}
+		for(IJavaElement javaElement : javaElementsToOpenInEditor) {
+			try {
+				JavaUI.openInEditor(javaElement);
+			} catch (PartInitException e) {
+				e.printStackTrace();
+			} catch (JavaModelException e) {
+				e.printStackTrace();
+			}
+		}
+		return finish;
+	}
+}
 //import java.lang.reflect.InvocationTargetException;
 //import java.util.ArrayList;
 //import java.util.List;

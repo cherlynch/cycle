@@ -1,9 +1,15 @@
 package cn.njust.cy.views;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
+import java.util.List;
 
+import org.eclipse.core.commands.operations.IOperationHistoryListener;
+import org.eclipse.core.commands.operations.OperationHistoryEvent;
 import org.eclipse.core.resources.*;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.jdt.core.*;
 import org.eclipse.jdt.core.dom.*;
@@ -11,17 +17,21 @@ import org.eclipse.jdt.core.dom.rewrite.*;
 import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jface.action.Action;
 import org.eclipse.jface.action.IToolBarManager;
+import org.eclipse.jface.dialogs.MessageDialog;
+import org.eclipse.jface.operation.IRunnableWithProgress;
 import org.eclipse.jface.text.*;
 import org.eclipse.jface.viewers.*;
+import org.eclipse.ltk.core.refactoring.Refactoring;
+import org.eclipse.ltk.ui.refactoring.RefactoringWizardOpenOperation;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.graphics.Image;
 import org.eclipse.swt.layout.GridData;
-import org.eclipse.swt.widgets.Composite;
-import org.eclipse.swt.widgets.TreeColumn;
+import org.eclipse.swt.widgets.*;
 import org.eclipse.text.edits.MalformedTreeException;
 import org.eclipse.text.edits.TextEdit;
 import org.eclipse.ui.*;
 import org.eclipse.ui.part.ViewPart;
+import org.eclipse.ui.progress.IProgressService;
 import org.eclipse.ui.texteditor.ITextEditor;
 import org.eclipse.jface.text.source.Annotation;
 import org.eclipse.jface.text.source.AnnotationModel;
@@ -30,17 +40,18 @@ import cn.njust.cy.detect.Cycle;
 import cn.njust.cy.detect.judgeTypes;
 import cn.njust.cy.entity.Dependency;
 import cn.njust.cy.entity.DependencyDetail;
-import cn.njust.cy.actions.AbstractRefactoring;
+import cn.njust.cy.actions.InversionRefactoring;
 import cn.njust.cy.actions.MoveRefactoring;
+import cn.njust.cy.actions.RemoveImport;
 import depends.matrix.core.DependencyValue;
 
 public class cycleView extends ViewPart {
 	private static final String MESSAGE_DIALOG_TITLE = "MyViewer";
 	
 	private TreeViewer treeViewer;
+	
 	private Action identifyBadSmellsAction;
 	private Action applyRefactoringAction;
-	private Action applyRefactoringAction2;
 	private Action doubleClickAction;
     Dependency[] dependencies;
     private IJavaProject selectedProject;
@@ -124,6 +135,11 @@ public class cycleView extends ViewPart {
 		}
 	}
 
+	class NameSorter extends ViewerSorter {
+		public int compare(Viewer viewer, Object obj1, Object obj2) {
+			return ((Dependency)obj1).getId()-((Dependency)obj2).getId();
+		}
+	}
 	/**
 	 * The constructor.
 	 */
@@ -142,9 +158,9 @@ public class cycleView extends ViewPart {
 		treeViewer.setInput(getViewSite());
 		TableLayout layout = new TableLayout();
 		layout.addColumnData(new ColumnWeightData(20, true));
-		layout.addColumnData(new ColumnWeightData(40, true));
-		layout.addColumnData(new ColumnWeightData(40, true));
-		layout.addColumnData(new ColumnWeightData(20, true));
+		layout.addColumnData(new ColumnWeightData(50, true));
+		layout.addColumnData(new ColumnWeightData(50, true));
+		layout.addColumnData(new ColumnWeightData(10, true));
 		treeViewer.getTree().setLayout(layout);
 		treeViewer.getTree().setLayoutData(new GridData(GridData.FILL_BOTH));
 		new TreeColumn(treeViewer.getTree(), SWT.LEFT).setText("Type");
@@ -164,6 +180,17 @@ public class cycleView extends ViewPart {
 		contributeToActionBars();
 		getSite().getWorkbenchWindow().getSelectionService().addSelectionListener(selectionListener);
 //		JavaCore.addElementChangedListener(ElementChangedListener.getInstance());
+		getSite().getWorkbenchWindow().getWorkbench().getOperationSupport().getOperationHistory().addOperationHistoryListener(new IOperationHistoryListener() {
+			public void historyNotification(OperationHistoryEvent event) {
+				int eventType = event.getEventType();
+				if(eventType == OperationHistoryEvent.UNDONE  || eventType == OperationHistoryEvent.REDONE ||
+						eventType == OperationHistoryEvent.OPERATION_ADDED || eventType == OperationHistoryEvent.OPERATION_REMOVED) {
+					if(activeProject != null) {
+//						applyRefactoringAction.setEnabled(false);
+					}
+				}
+			}
+		});
 	}
 	
 	@Override
@@ -180,17 +207,39 @@ public class cycleView extends ViewPart {
 	private void fillLocalToolBar(IToolBarManager manager) {
 		manager.add(identifyBadSmellsAction);
 		manager.add(applyRefactoringAction);
-		manager.add(applyRefactoringAction2);
 	}
 	
 	private void makeActions() {
-		identifyBadSmellsAction = new Action() {
+		identifyBadSmellsAction = new Action() { //识别循环依赖
 			public void run() {
 				activeProject = selectedProject;
 				String projectPath= activeProject.getProject().getLocation().toString();//获取项目路径
-				cycle = new Cycle(projectPath);
-				ArrayList <Dependency> dep = cycle.getCycle();
-				dependencies = dep.toArray(new Dependency[dep.size()]);//得到循环依赖
+				IWorkbench wb = PlatformUI.getWorkbench();
+				IProgressService ps = wb.getProgressService();
+				try {
+					ps.busyCursorWhile(new IRunnableWithProgress() {
+						public void run(IProgressMonitor monitor) throws InvocationTargetException, InterruptedException {
+							monitor.beginTask("Identification of circular dependency refactoring opportunities",0);
+							if(monitor.isCanceled())
+								throw new OperationCanceledException();
+							cycle = new Cycle(projectPath);
+							Collection <Dependency> dep = cycle.getCycle();
+							dependencies = dep.toArray(new Dependency[dep.size()]);//得到循环依赖	
+							monitor.worked(1);
+							HashSet<String> callers = cycle.getCallers("org.jfree.experimental.chart.swt.editor.SWTAxisEditor.getInstance");
+							for(String c:callers) {
+								System.out.println("callers: "+c);
+							}
+							
+						}
+					});
+					
+				} catch (InvocationTargetException | InterruptedException e) {
+					// TODO Auto-generated catch block
+					MessageDialog.openInformation(PlatformUI.getWorkbench().getActiveWorkbenchWindow().getShell(), MESSAGE_DIALOG_TITLE,
+							"Errors were detected in the project. Fix the errors before refactoring.");
+					e.printStackTrace();
+				}
 				treeViewer.setContentProvider(new ViewContentProvider());
 			}
 		};
@@ -199,20 +248,20 @@ public class cycleView extends ViewPart {
 				getImageDescriptor(ISharedImages.IMG_OBJS_INFO_TSK));
 //		identifyBadSmellsAction.setEnabled(false);
 		
-		applyRefactoringAction = new Action() {
+		applyRefactoringAction = new Action() {//重构
 			public void run() {
 				IStructuredSelection selection = (IStructuredSelection)treeViewer.getSelection();
 				if(selection.getFirstElement() instanceof Dependency) {
-					Dependency dep = (Dependency)selection.getFirstElement();
-					String relativePathA = getRelativePath(dep.getDetail()[0].getName());
-					String relativePathB = getRelativePath(dep.getDetail()[1].getName());
+					Dependency selectDependency = (Dependency)selection.getFirstElement();//获取选中的依赖
+					String relativePathA = getRelativePath(selectDependency.getDetail()[0].getName());
+					String relativePathB = getRelativePath(selectDependency.getDetail()[1].getName());
 					IPath newpathA = new Path(relativePathA);
 					IPath newpathB = new Path(relativePathB); 
 					IFile fileA = ResourcesPlugin.getWorkspace().getRoot().getFile(newpathA);
 					IFile fileB = ResourcesPlugin.getWorkspace().getRoot().getFile(newpathB);
-					DependencyDetail detailA = dep.getDetail()[0];
-					DependencyDetail detailB = dep.getDetail()[1];
-					String interfaceName = "Abstract" + fileA.getName().replaceAll(".java","");
+					DependencyDetail detailA = selectDependency.getDetail()[0];
+					DependencyDetail detailB = selectDependency.getDetail()[1];
+					String newFileName = "";
 					
 					IJavaElement sourceJavaElementA = JavaCore.create(fileA);
 					IJavaElement sourceJavaElementB = JavaCore.create(fileB);
@@ -225,29 +274,45 @@ public class cycleView extends ViewPart {
 					} catch (JavaModelException e) {
 						// TODO Auto-generated catch block
 						e.printStackTrace();
-					}						
-					int mytype = new judgeTypes(dep).getTypes();
-					System.out.println(mytype);
-					if(mytype==1||mytype==2||mytype==-1) {
-						AbstractRefactoring refactoring;
-						if(mytype==1||mytype==-1) refactoring = new AbstractRefactoring(fileA,fileB,interfaceName,detailB,activeProject);
-						else  refactoring = new AbstractRefactoring(fileB,fileA,interfaceName,detailA,activeProject);
-						ICompilationUnit sourceIUnit = (ICompilationUnit)JavaCore.create(fileB);
-						CompilationUnit sourceUnit = parse(sourceIUnit);	
-						IPackageFragment sourcePackage = (IPackageFragment)JavaCore.create((IFolder) fileB.getParent());
-						TypeDeclaration typeDecl = (TypeDeclaration) sourceUnit.types().get(0);
-						if(typeDecl.isInterface()) {
-							String interfaceName1 = typeDecl.resolveBinding().getBinaryName();
-							System.out.println(interfaceName1);
-							Collection<String> strs = cycle.getImplementsRelation(interfaceName1);
-							for(String str:strs) {
+					}	
+					CompilationUnit sourceUnitA = parse((ICompilationUnit)JavaCore.create(fileA));	
+					TypeDeclaration typeDeclA = (TypeDeclaration) sourceUnitA.types().get(0);
+					CompilationUnit sourceUnitB = parse((ICompilationUnit)JavaCore.create(fileB));	
+					TypeDeclaration typeDeclB = (TypeDeclaration) sourceUnitB.types().get(0);					
+					
+					int mytype = new judgeTypes(selectDependency).getTypes();
+					Refactoring refactoring = null;
+					System.out.println("mytype "+mytype);
+					if(mytype==5)  refactoring = new RemoveImport(fileA,fileB);
+					else if(mytype==6)  refactoring = new RemoveImport(fileB,fileA);
+					else {
+						if(mytype==1||typeDeclB.isInterface()||mytype==-1) {
+							HashSet<String>  strs = new HashSet<String>();							
+							if(typeDeclB.isInterface()) {
+								strs = openChangeFiles(typeDeclB);
+							}
+							refactoring = new InversionRefactoring(fileA,fileB,newFileName,detailB,strs);
+						}
+						if(mytype==2||typeDeclA.isInterface()) {
+							Collection<String>  strs = new HashSet<String>();							
+							if(typeDeclA.isInterface()) {
+								strs = openChangeFiles(typeDeclA);
+							}
+							refactoring = new InversionRefactoring(fileB,fileA,newFileName,detailA,strs);
+						}
+						if(mytype==4) { //B extends/implements A
+							HashSet<String> str = new HashSet<String>();
+							for(DependencyValue val:detailA.getValues()) {
+								str.addAll(cycle.getCallers(val.getDetailFrom()));
+								System.out.println("from " + val.getDetailFrom());
+							}
+							for(String s:str) {
+								System.out.println("callers: "+s);
+								String pro = s.substring(0,s.lastIndexOf("."));
 								try {
-									IType type = activeProject.findType(str);
-									ICompilationUnit IUnit = type.getCompilationUnit();
-									System.out.println("unit: "+IUnit.getElementName());
-									IJavaElement javaElement = IUnit;
+									IType type = activeProject.findType(pro);
+									IJavaElement javaElement = type.getCompilationUnit();
 									JavaUI.openInEditor(javaElement);
-									refactoring.modifyImplementsChange(IUnit);
 								} catch (JavaModelException e) {
 									// TODO Auto-generated catch block
 									e.printStackTrace();
@@ -256,10 +321,40 @@ public class cycleView extends ViewPart {
 									e.printStackTrace();
 								}
 							}
+							refactoring = new MoveRefactoring(fileA,fileB,newFileName,detailA,str);
+						}
+						if(mytype==3) {
+							HashSet<String> str = new HashSet<String>();
+							for(DependencyValue val:detailA.getValues()) {
+								str.addAll(cycle.getCallers(val.getDetailFrom()));
+							}
+							for(String s:str) {
+								System.out.println("callers: "+s);
+								String pro = s.substring(0,s.lastIndexOf("."));
+								try {
+									IType type = activeProject.findType(pro);
+									IJavaElement javaElement = type.getCompilationUnit();
+									JavaUI.openInEditor(javaElement);
+								} catch (JavaModelException e) {
+									// TODO Auto-generated catch block
+									e.printStackTrace();
+								} catch (PartInitException e) {
+									// TODO Auto-generated catch block
+									e.printStackTrace();
+								}	
+							}
+							refactoring = new MoveRefactoring(fileB,fileA,newFileName,detailA,str);
+						}
+						
+						MyRefactoringWizard wizard = new MyRefactoringWizard(refactoring, applyRefactoringAction);
+						RefactoringWizardOpenOperation op = new RefactoringWizardOpenOperation(wizard); 
+						try { 
+							String titleForFailedChecks = ""; //$NON-NLS-1$ 
+							op.run(getSite().getShell(), titleForFailedChecks); 
+						} catch(InterruptedException e) {
+							e.printStackTrace();
 						}
 					}
-//					if(mytype==3||mytype==4) new MoveRefactoring(fileA,fileB,"");
-//					
 					
 				}
 			}
@@ -268,15 +363,6 @@ public class cycleView extends ViewPart {
 		applyRefactoringAction.setImageDescriptor(PlatformUI.getWorkbench().getSharedImages().
 			getImageDescriptor(ISharedImages.IMG_DEF_VIEW));
 //		applyRefactoringAction.setEnabled(false);
-		
-		applyRefactoringAction2 = new Action() {
-			public void run() {
-				IStructuredSelection selection = (IStructuredSelection)treeViewer.getSelection();
-			}
-		};
-		applyRefactoringAction2.setToolTipText("Apply Refactoring");
-		applyRefactoringAction2.setImageDescriptor(PlatformUI.getWorkbench().getSharedImages().
-			getImageDescriptor(ISharedImages.IMG_DEF_VIEW));
 		
 		doubleClickAction = new Action() {
 			public void run() {				
@@ -298,20 +384,49 @@ public class cycleView extends ViewPart {
 								annotationModel.removeAnnotation(currentAnnotation);
 							}
 						}
+						Collection<DependencyValue> values = detail.getValues();
+						Collection<String> strList = new HashSet<String>();
+						for(DependencyValue val:values) {
+							String []detailToSplit = val.getDetailTo().split("\\.");
+							String str = detailToSplit[detailToSplit.length-1];
+							strList.add(str);
+						}
 						ICompilationUnit iu = (ICompilationUnit)JavaCore.create(sourceFile);
 						CompilationUnit  u = parse(iu);	
 						TypeDeclaration typeDecl = (TypeDeclaration) u.types().get(0);
-						typeDecl.accept(new ASTVisitor() {
-							public boolean visit(SimpleType node) {
-								if(node.toString().equals("TextFigure")||node.toString().equals("textOwner.getFont()")) {
-									Position position = new Position(node.getStartPosition(),node.getLength()+1);
-									Annotation annotation = new Annotation("myAnnotation",false,"");
-									annotationModel.addAnnotation(annotation, position);
-									sourceEditor.setHighlightRange(node.getStartPosition(),node.getLength()+1, true);
+						ArrayList<Position> positions = new ArrayList<Position>();
+						for(String s:strList) {
+							System.out.println(s);
+							typeDecl.accept(new ASTVisitor() {
+								public boolean visit(SimpleType node) {
+									if(node.toString().equals(s)) {
+										int startPosition = node.getStartPosition();
+										int nodelength = node.getLength();
+										Position position = new Position(startPosition-1,nodelength+2);
+										positions.add(position);
+//										sourceEditor.setHighlightRange(startPosition-1,length+2, true);
+									}
+									return true;
 								}
-								return true;
+							});
+						}
+						Position firstPosition = null;Position lastPosition = null;
+						int minOffset = Integer.MAX_VALUE;int maxOffset = -1;
+						for(Position position:positions) {
+							Annotation annotation = new Annotation("myAnnotation",false,"");
+							annotationModel.addAnnotation(annotation, position);
+							if(position.getOffset() < minOffset) {
+								minOffset = position.getOffset();
+								firstPosition = position;
 							}
-						});
+							if(position.getOffset() > maxOffset) {
+								maxOffset = position.getOffset();
+								lastPosition = position;
+							}
+						}
+						int offset = firstPosition.getOffset();
+						int length = lastPosition.getOffset() + lastPosition.getLength() - firstPosition.getOffset();
+							sourceEditor.setHighlightRange(offset, length, true);
 						
 					} catch (PartInitException e) {
 						// TODO Auto-generated catch block
@@ -380,6 +495,34 @@ public class cycleView extends ViewPart {
 		parser.setSource(unit);
 		parser.setResolveBindings(true);
 		return (CompilationUnit) parser.createAST(null); // parse
+	}
+	
+	public Dependency getParentDependency(DependencyDetail detail) {
+		for(Dependency dependency:dependencies) {
+			if(dependency.getId()==detail.getId()) {
+				return dependency;
+			}
+		}
+		return null;
+	}
+	public HashSet<String> openChangeFiles(TypeDeclaration typeDeclB) {
+		String interfaceName = typeDeclB.resolveBinding().getBinaryName();
+		HashSet<String>  strs = cycle.getImplementsRelation(interfaceName);
+		for(String str:strs) {
+			try {
+				IType type = activeProject.findType(str);
+				IJavaElement javaElement = type.getCompilationUnit();
+				JavaUI.openInEditor(javaElement);
+			} catch (JavaModelException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			catch (PartInitException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		}
+		return strs;
 	}
 }
 

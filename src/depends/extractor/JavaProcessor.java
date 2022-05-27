@@ -164,7 +164,7 @@ public class JavaProcessor {
 	protected void parseFile(String fileFullPath) {
 		JavaFileParser fileParser = createFileParser(fileFullPath);
 		try {
-			System.out.println("parsing " + fileFullPath + "...");
+//			System.out.println("parsing " + fileFullPath + "...");
 			fileParser.parse();
 		} catch (IOException e) {
 			e.printStackTrace();
